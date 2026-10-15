@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zutrittscheck – OCR-Prototyp</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17202a;background:#f5f7fa}
+body{max-width:760px;margin:auto;padding:16px;line-height:1.45}
+h1{font-size:1.6rem} h2{font-size:1.15rem;margin-bottom:8px}
+.card{background:white;border:1px solid #d8dee8;border-radius:14px;padding:16px;margin:14px 0}
+button,label.file{font:inherit;padding:11px 14px;border:0;border-radius:10px;background:#164e8a;color:white;display:inline-block;margin:4px 4px 4px 0}
+button:disabled{opacity:.5} input,select{font:inherit;padding:10px;border:1px solid #aeb8c5;border-radius:8px;max-width:100%;box-sizing:border-box}
+input[type=text],input[type=date]{width:100%;margin:4px 0 10px}
+video,img.preview{width:100%;max-height:55vh;object-fit:contain;background:#111;border-radius:10px;margin-top:10px}
+.muted{color:#566273;font-size:.92rem}.notice{background:#fff3cd;padding:12px;border-radius:10px}
+.result{padding:14px;border-radius:10px;font-weight:700;margin-top:10px;background:#e9eef5}
+.good{background:#d9f7e5;color:#14532d}.bad{background:#fee2e2;color:#991b1b}.review{background:#fef3c7;color:#854d0e}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:520px){.grid{grid-template-columns:1fr}}
+#status{font-weight:600}
+</style>
+</head>
+<body>
+<h1>Zutrittscheck – OCR-Prototyp</h1>
+<p class="notice"><strong>Nur zum Testen mit künstlichen Beispieldaten.</strong> Diese öffentliche Testseite ist nicht für echte Gästelisten oder Ausweisdaten freigegeben. OCR kann Fehler machen; immer die erkannten Angaben prüfen.</p>
+
+<section class="card">
+<h2>1. Gästeliste importieren</h2>
+<p class="muted">Unterstützt CSV direkt. Für Excel-Dateien (.xlsx) wird eine Bibliothek von einem externen CDN geladen. Die ausgewählte Datei wird nicht hochgeladen; sie wird im Browser verarbeitet.</p>
+<label class="file" for="guestFile">CSV / Excel auswählen</label>
+<input id="guestFile" type="file" accept=".csv,.xlsx,.xls,text/csv">
+<p id="listStatus" class="muted">Noch keine Gästeliste geladen.</p>
+<p class="muted">CSV-Spalten sollten heissen: Vorname, Nachname, Geburtsdatum. Beispiel: Anna,Muster,1990-04-23</p>
+<button id="sampleBtn" type="button">Künstliche Beispieldaten laden</button>
+</section>
+
+<section class="card">
+<h2>2. Ausweis fotografieren</h2>
+<p class="muted">Nimm für diesen Prototyp nur ein selbst erstelltes Testblatt mit erfundenem Namen und Geburtsdatum. Bitte keine echten Dokumente fotografieren.</p>
+<label class="file" for="photo">Foto aufnehmen / auswählen</label>
+<input id="photo" type="file" accept="image/*" capture="environment">
+<img id="preview" class="preview" hidden alt="Vorschau des ausgewählten Testbildes">
+<button id="ocrBtn" type="button" disabled>Text lokal im Browser erkennen</button>
+<p id="ocrStatus" class="muted">Noch kein Testbild ausgewählt.</p>
+<p class="muted">Die Texterkennung benötigt beim ersten Start eine Internetverbindung, um die OCR-Bibliothek und Sprachdaten zu laden. Das Bild wird durch den Code nicht an einen OCR-Dienst gesendet.</p>
+</section>
+
+<section class="card">
+<h2>3. Angaben prüfen und vergleichen</h2>
+<label for="first">Vorname</label><input id="first" type="text" autocomplete="off" placeholder="z. B. Anna">
+<label for="last">Nachname</label><input id="last" type="text" autocomplete="off" placeholder="z. B. Muster">
+<label for="dob">Geburtsdatum</label><input id="dob" type="date">
+<button id="checkBtn" type="button">Mit Gästeliste vergleichen</button>
+<div id="result" class="result" role="status">Noch kein Abgleich durchgeführt.</div>
+<p id="matchDetails" class="muted"></p>
+</section>
+
+<section class="card">
+<h2>Erkannter Text</h2>
+<textarea id="ocrText" rows="6" style="width:100%;box-sizing:border-box;font:inherit" placeholder="Der OCR-Text erscheint hier. Du kannst ihn prüfen und die Felder oben manuell korrigieren."></textarea>
+</section>
+
+<p class="muted">Prototyp: Es gibt noch keine geräteübergreifende Synchronisierung und kein Kontrollprotokoll. Der Abgleich sucht nach Vorname, Nachname und Geburtsdatum. Mehrfacher Eintritt wird nicht blockiert.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+let guests=[];
+let selectedImage=null;
+function norm(s){return String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLocaleLowerCase('de-CH').replace(/\s+/g,' ');}
+function dateNorm(s){
+  s=String(s??'').trim();
+  if(!s) return '';
+  let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/); if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m=s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/); if(m)return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  const d=new Date(s); if(!isNaN(d))return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  return s;
+}
+function parseCSV(text){
+ const rows=[]; let row=[],cell='',quoted=false;
+ for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];
+  if(c==='"'&&quoted&&n==='"'){cell+='"';i++}
+  else if(c==='"')quoted=!quoted;
+  else if((c===','||c===';'||c==='\t')&&!quoted){row.push(cell);cell=''}
+  else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&n==='\n')i++;row.push(cell);if(row.some(x=>x.trim()))rows.push(row);row=[];cell=''}
+  else cell+=c;
+ }
+ row.push(cell);if(row.some(x=>x.trim()))rows.push(row);
+ if(!rows.length)return [];
+ const headers=rows.shift().map(x=>norm(x).replace(/[^a-z0-9]/g,''));
+ const idx=(...names)=>headers.findIndex(h=>names.includes(h));
+ const fi=idx('vorname','firstname','first','givenname'), li=idx('nachname','lastname','surname','familyname'), di=idx('geburtsdatum','birthdate','dateofbirth','dob');
+ if(fi<0||li<0||di<0)throw new Error('Spalten nicht erkannt. Benenne die Spalten Vorname, Nachname und Geburtsdatum.');
+ return rows.map(r=>({first:r[fi]||'',last:r[li]||'',dob:dateNorm(r[di]||'')})).filter(g=>g.first&&g.last&&g.dob);
+}
+$('sampleBtn').onclick=()=>{
+ guests=[
+ {first:'Anna',last:'Muster',dob:'1990-04-23'},
+ {first:'Lukas',last:'Beispiel',dob:'1985-11-07'},
+ {first:'Mia',last:'Testperson',dob:'2001-02-14'}
+ ];
+ $('listStatus').textContent='3 künstliche Testpersonen geladen.';
+};
+$('guestFile').addEventListener('change',async e=>{
+ const f=e.target.files[0]; if(!f)return;
+ try{
+  let parsed;
+  if(f.name.toLowerCase().endsWith('.csv')) parsed=parseCSV(await f.text());
+  else {
+   if(!window.XLSX) await loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+   const data=await f.arrayBuffer(),wb=XLSX.read(data,{type:'array',cellDates:true});
+   const sheet=wb.Sheets[wb.SheetNames[0]];
+   parsed=parseCSV(XLSX.utils.sheet_to_csv(sheet));
+  }
+  guests=parsed;
+  $('listStatus').textContent=`${guests.length} Einträge lokal geladen.`;
+ }catch(err){$('listStatus').textContent='Importfehler: '+err.message;}
+});
+function loadScript(src){return new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=src;s.onload=resolve;s.onerror=()=>reject(new Error('Bibliothek konnte nicht geladen werden.'));document.head.appendChild(s);});}
+$('photo').addEventListener('change',e=>{
+ selectedImage=e.target.files[0]||null;
+ if(selectedImage){$('preview').src=URL.createObjectURL(selectedImage);$('preview').hidden=false;$('ocrBtn').disabled=false;$('ocrStatus').textContent='Testbild bereit.';}
+});
+$('ocrBtn').onclick=async()=>{
+ if(!selectedImage)return;
+ $('ocrBtn').disabled=true;$('ocrStatus').textContent='Lade OCR und erkenne Text …';
+ try{
+  if(!window.Tesseract)await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
+  const result=await Tesseract.recognize(selectedImage,'deu+eng',{logger:m=>{if(m.status)$('ocrStatus').textContent=m.status+(m.progress!=null?' '+Math.round(m.progress*100)+'%':'');}});
+  $('ocrText').value=result.data.text;
+  $('ocrStatus').textContent='Erkennung abgeschlossen. Bitte Angaben manuell prüfen und übernehmen.';
+  // Best-effort parsing is intentionally avoided: layout varies and OCR may misread fields.
+ }catch(err){$('ocrStatus').textContent='OCR-Fehler: '+err.message;}
+ finally{$('ocrBtn').disabled=false;}
+};
+$('checkBtn').onclick=()=>{
+ const first=$('first').value,last=$('last').value,dob=dateNorm($('dob').value);
+ const res=$('result'),details=$('matchDetails');
+ res.className='result';details.textContent='';
+ if(!guests.length){res.textContent='PRÜFEN – zuerst eine Gästeliste laden.';res.classList.add('review');return;}
+ if(!first.trim()||!last.trim()||!dob){res.textContent='PRÜFEN – Angaben unvollständig.';res.classList.add('review');return;}
+ const exact=guests.find(g=>norm(g.first)===norm(first)&&norm(g.last)===norm(last)&&dateNorm(g.dob)===dob);
+ if(exact){res.textContent='GUT – Eintrag gefunden.';res.classList.add('good');details.textContent='Name und Geburtsdatum stimmen mit einem Eintrag überein.';return;}
+ const sameName=guests.filter(g=>norm(g.first)===norm(first)&&norm(g.last)===norm(last));
+ if(sameName.length){res.textContent='PRÜFEN – Name gefunden, Geburtsdatum stimmt nicht überein.';res.classList.add('review');details.textContent='Geburtsdatum und Schreibweise manuell kontrollieren.';}
+ else{res.textContent='NICHT GUT – kein passender Eintrag gefunden.';res.classList.add('bad');}
+};
+window.addEventListener('pagehide',()=>{if($('preview').src.startsWith('blob:'))URL.revokeObjectURL($('preview').src);});
+</script>
+</body></html>
